@@ -2,7 +2,7 @@
 
 3D soft-body armor penetration simulation: spring–mass particles, material-based bond breaking, and collision response. Modular Qt application.
 
-**Run:** `pip install -r requirements.txt` then `python run.py` or `python armorsim_qt.py`
+**Run:** `pip install -r requirements.txt` then `python armorsim_qt.py`
 
 ---
 
@@ -111,8 +111,7 @@ Representative values: **Tungsten** (penetrator) – ρ≈19.3e3 kg/m³, E≈411
 ## Project layout
 
 ```
-├── run.py           # Entry point (recommended)
-├── armorsim_qt.py   # Legacy entry point (stub)
+├── armorsim_qt.py   # Entry point
 ├── mainwindow.py    # Main window, docks, scene tree, properties, simulation controls
 ├── views.py         # 3D view (SimViewWidget), 2D ortho canvases (OrthoCanvas)
 ├── gizmo.py         # Transform gizmo for dragging bodies
