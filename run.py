@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""ArmorSim 3D - Soft Body Penetration Simulation (legacy entry point)."""
+"""Entry point: run the ArmorSim 3D application."""
 
 from mainwindow import main
 
