@@ -3,11 +3,10 @@
 
 import numpy as np
 
-# Real-world data refs: tungsten (AZoM, material-properties.org);
-# RHA (MIL-DTL-12560K); ceramic armor (alumina/B4C, AZoM, precision-ceramics).
 MATERIALS = {
     'tungsten': {
-        'name': 'Tungsten',
+        'name': 'Tungsten (pure)',
+        'role': 'penetrator',
         'density': 19300,
         'strength': 980e6,
         'youngs_modulus': 411e9,
@@ -19,8 +18,51 @@ MATERIALS = {
         'compression_limit': 0.40,
         'color': np.array([1.0, 0.7, 0.25])
     },
+    'tungsten_carbide': {
+        'name': 'Tungsten Carbide',
+        'role': 'penetrator',
+        'density': 15600,
+        'strength': 500e6,
+        'youngs_modulus': 600e9,
+        'restitution': 0.20,
+        'hardness': 9.5,
+        'poisson_ratio': 0.22,
+        'friction_coeff': 0.35,
+        'breaking_strain': 0.004,
+        'compression_limit': 0.55,
+        'color': np.array([0.85, 0.78, 0.65])
+    },
+    'depleted_uranium': {
+        'name': 'Depleted Uranium',
+        'role': 'penetrator',
+        'density': 19100,
+        'strength': 1100e6,
+        'youngs_modulus': 190e9,
+        'restitution': 0.25,
+        'hardness': 6.0,
+        'poisson_ratio': 0.30,
+        'friction_coeff': 0.45,
+        'breaking_strain': 0.08,
+        'compression_limit': 0.45,
+        'color': np.array([0.6, 0.62, 0.5])
+    },
+    'steel_core': {
+        'name': 'Steel (AP core)',
+        'role': 'penetrator',
+        'density': 7850,
+        'strength': 1200e6,
+        'youngs_modulus': 210e9,
+        'restitution': 0.50,
+        'hardness': 5.5,
+        'poisson_ratio': 0.29,
+        'friction_coeff': 0.55,
+        'breaking_strain': 0.12,
+        'compression_limit': 0.48,
+        'color': np.array([0.55, 0.52, 0.58])
+    },
     'steel': {
         'name': 'RHA Steel',
+        'role': 'both',
         'density': 7850,
         'strength': 1000e6,
         'youngs_modulus': 210e9,
@@ -33,9 +75,10 @@ MATERIALS = {
         'color': np.array([0.5, 0.55, 0.65])
     },
     'ceramic': {
-        'name': 'Ceramic',
+        'name': 'Alumina (Al2O3)',
+        'role': 'armor',
         'density': 3950,
-        'strength': 900e6,
+        'strength': 380e6,
         'youngs_modulus': 370e9,
         'restitution': 0.22,
         'hardness': 9.0,
@@ -44,5 +87,75 @@ MATERIALS = {
         'breaking_strain': 0.008,
         'compression_limit': 0.65,
         'color': np.array([0.95, 0.9, 0.82])
+    },
+    'boron_carbide': {
+        'name': 'Boron Carbide (B4C)',
+        'role': 'armor',
+        'density': 2520,
+        'strength': 520e6,
+        'youngs_modulus': 460e9,
+        'restitution': 0.18,
+        'hardness': 9.8,
+        'poisson_ratio': 0.17,
+        'friction_coeff': 0.45,
+        'breaking_strain': 0.003,
+        'compression_limit': 0.70,
+        'color': np.array([0.72, 0.72, 0.72])
+    },
+    'silicon_carbide': {
+        'name': 'Silicon Carbide (SiC)',
+        'role': 'armor',
+        'density': 3210,
+        'strength': 360e6,
+        'youngs_modulus': 410e9,
+        'restitution': 0.20,
+        'hardness': 9.3,
+        'poisson_ratio': 0.19,
+        'friction_coeff': 0.48,
+        'breaking_strain': 0.004,
+        'compression_limit': 0.68,
+        'color': np.array([0.65, 0.68, 0.66])
+    },
+    'titanium': {
+        'name': 'Titanium (Ti-6Al-4V)',
+        'role': 'armor',
+        'density': 4430,
+        'strength': 1100e6,
+        'youngs_modulus': 114e9,
+        'restitution': 0.48,
+        'hardness': 5.0,
+        'poisson_ratio': 0.34,
+        'friction_coeff': 0.52,
+        'breaking_strain': 0.10,
+        'compression_limit': 0.48,
+        'color': np.array([0.7, 0.7, 0.72])
+    },
+    'aluminum_armor': {
+        'name': 'Aluminum 5083',
+        'role': 'armor',
+        'density': 2660,
+        'strength': 250e6,
+        'youngs_modulus': 71e9,
+        'restitution': 0.52,
+        'hardness': 2.8,
+        'poisson_ratio': 0.33,
+        'friction_coeff': 0.55,
+        'breaking_strain': 0.12,
+        'compression_limit': 0.50,
+        'color': np.array([0.82, 0.84, 0.86])
+    },
+    'uhmwpe': {
+        'name': 'UHMWPE (Dyneema)',
+        'role': 'armor',
+        'density': 970,
+        'strength': 3.5e9,
+        'youngs_modulus': 110e9,
+        'restitution': 0.35,
+        'hardness': 2.0,
+        'poisson_ratio': 0.42,
+        'friction_coeff': 0.25,
+        'breaking_strain': 0.035,
+        'compression_limit': 0.35,
+        'color': np.array([0.92, 0.93, 0.95])
     },
 }

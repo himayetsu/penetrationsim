@@ -20,6 +20,14 @@ from views import SimViewWidget, OrthoCanvas
 from gizmo import TransformGizmo
 from materials import MATERIALS
 
+# Name (display) -> material key, for change_mat
+NAME_TO_MATERIAL = {m['name']: key for key, m in MATERIALS.items()}
+
+
+def _materials_for_role(role):
+    """Return list of display names for materials usable as penetrator or armor."""
+    return [m['name'] for m in MATERIALS.values() if m.get('role') == role or m.get('role') == 'both']
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -391,10 +399,8 @@ class MainWindow(QMainWindow):
         mat_grp = QGroupBox("Material")
         ml = QVBoxLayout(mat_grp)
         mat_cb = QComboBox()
-        if body.body_type == 'penetrator':
-            mat_cb.addItems(['Tungsten', 'RHA Steel'])
-        else:
-            mat_cb.addItems(['RHA Steel', 'Ceramic'])
+        role = 'penetrator' if body.body_type == 'penetrator' else 'armor'
+        mat_cb.addItems(_materials_for_role(role))
         mat_cb.setCurrentText(MATERIALS[body.material]['name'])
         mat_cb.currentTextChanged.connect(lambda t: self.change_mat(body, t))
         ml.addWidget(mat_cb)
@@ -438,8 +444,7 @@ class MainWindow(QMainWindow):
                 w.deleteLater()
 
     def change_mat(self, body, name):
-        m = {'Tungsten': 'tungsten', 'RHA Steel': 'steel', 'Ceramic': 'ceramic'}
-        body.material = m.get(name, 'steel')
+        body.material = NAME_TO_MATERIAL.get(name, 'steel')
         body.rebuild()
         self.rebuild_visuals(body)
 
