@@ -15,6 +15,7 @@ MATERIALS = {
         'poisson_ratio': 0.28,
         'friction_coeff': 0.4,
         'breaking_strain': 0.05,
+        'yield_strain': 0.004,
         'compression_limit': 0.40,
         'color': np.array([1.0, 0.7, 0.25])
     },
@@ -29,6 +30,7 @@ MATERIALS = {
         'poisson_ratio': 0.22,
         'friction_coeff': 0.35,
         'breaking_strain': 0.004,
+        'yield_strain': 0.003,
         'compression_limit': 0.55,
         'color': np.array([0.85, 0.78, 0.65])
     },
@@ -43,6 +45,7 @@ MATERIALS = {
         'poisson_ratio': 0.30,
         'friction_coeff': 0.45,
         'breaking_strain': 0.08,
+        'yield_strain': 0.010,
         'compression_limit': 0.45,
         'color': np.array([0.6, 0.62, 0.5])
     },
@@ -57,6 +60,7 @@ MATERIALS = {
         'poisson_ratio': 0.29,
         'friction_coeff': 0.55,
         'breaking_strain': 0.12,
+        'yield_strain': 0.008,
         'compression_limit': 0.48,
         'color': np.array([0.55, 0.52, 0.58])
     },
@@ -71,6 +75,7 @@ MATERIALS = {
         'poisson_ratio': 0.29,
         'friction_coeff': 0.6,
         'breaking_strain': 0.15,
+        'yield_strain': 0.006,
         'compression_limit': 0.50,
         'color': np.array([0.5, 0.55, 0.65])
     },
@@ -85,6 +90,7 @@ MATERIALS = {
         'poisson_ratio': 0.22,
         'friction_coeff': 0.5,
         'breaking_strain': 0.008,
+        'yield_strain': 0.008,
         'compression_limit': 0.65,
         'color': np.array([0.95, 0.9, 0.82])
     },
@@ -99,6 +105,7 @@ MATERIALS = {
         'poisson_ratio': 0.17,
         'friction_coeff': 0.45,
         'breaking_strain': 0.003,
+        'yield_strain': 0.003,
         'compression_limit': 0.70,
         'color': np.array([0.72, 0.72, 0.72])
     },
@@ -113,6 +120,7 @@ MATERIALS = {
         'poisson_ratio': 0.19,
         'friction_coeff': 0.48,
         'breaking_strain': 0.004,
+        'yield_strain': 0.004,
         'compression_limit': 0.68,
         'color': np.array([0.65, 0.68, 0.66])
     },
@@ -127,6 +135,7 @@ MATERIALS = {
         'poisson_ratio': 0.34,
         'friction_coeff': 0.52,
         'breaking_strain': 0.10,
+        'yield_strain': 0.008,
         'compression_limit': 0.48,
         'color': np.array([0.7, 0.7, 0.72])
     },
@@ -141,6 +150,7 @@ MATERIALS = {
         'poisson_ratio': 0.33,
         'friction_coeff': 0.55,
         'breaking_strain': 0.12,
+        'yield_strain': 0.005,
         'compression_limit': 0.50,
         'color': np.array([0.82, 0.84, 0.86])
     },
@@ -155,6 +165,7 @@ MATERIALS = {
         'poisson_ratio': 0.42,
         'friction_coeff': 0.25,
         'breaking_strain': 0.035,
+        'yield_strain': 0.015,
         'compression_limit': 0.35,
         'color': np.array([0.92, 0.93, 0.95])
     },

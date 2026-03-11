@@ -31,6 +31,7 @@ class SoftBody:
 
         self.initial_velocity = 1700.0
         self.particle_size = 0.006
+        self.particle_spacing = 0.012
 
     @property
     def n_particles(self):
@@ -39,7 +40,7 @@ class SoftBody:
 
 def create_cylinder_body(length, diameter, material, spacing=None):
     if spacing is None:
-        spacing = 0.012
+        spacing = float(np.clip(diameter / 2.5, 0.007, 0.012))
     mat = MATERIALS[material]
     radius = diameter / 2
     particles = []
@@ -91,15 +92,15 @@ def create_cylinder_body(length, diameter, material, spacing=None):
     springs = np.array(springs, dtype=np.float32)
     spring_indices = springs[:, :2].astype(np.int32)
     spring_rest = springs[:, 2]
-    area = spacing ** 2
-    k = mat['youngs_modulus'] * area / spacing * 1e-7
-    spring_stiff = np.full(len(springs), k, dtype=np.float32)
+    # k_i = E * scale * L0_i  →  K_eff = k_i / L0_i = E * scale (same for all spring lengths)
+    k_per_unit = mat['youngs_modulus'] * 3e-4
+    spring_stiff = (k_per_unit * spring_rest).astype(np.float32)
     return pos, vel, mass, spring_indices, spring_rest, spring_stiff
 
 
 def create_plate_body(width, height, thickness, angle_deg, material, spacing=None):
     if spacing is None:
-        spacing = 0.014
+        spacing = float(np.clip(min(thickness / 2.5, width / 10.0, height / 10.0), 0.007, 0.012))
     mat = MATERIALS[material]
     angle = np.radians(angle_deg)
     cos_a, sin_a = np.cos(angle), np.sin(angle)
@@ -160,9 +161,9 @@ def create_plate_body(width, height, thickness, angle_deg, material, spacing=Non
         spring_indices = np.zeros((0, 2), dtype=np.int32)
         spring_rest = np.zeros(0, dtype=np.float32)
 
-    area = spacing ** 2
-    k = mat['youngs_modulus'] * area / spacing * 1e-7 * 0.6
-    spring_stiff = np.full(len(springs), k, dtype=np.float32)
+    # Same uniform-K_eff formula as cylinder, with 0.6 factor for plate geometry
+    k_per_unit = mat['youngs_modulus'] * 0.6 * 3e-4
+    spring_stiff = (k_per_unit * spring_rest).astype(np.float32)
     return pos, vel, mass, spring_indices, spring_rest, spring_stiff, static
 
 
@@ -176,8 +177,11 @@ class Penetrator(SoftBody):
         self.rebuild()
 
     def rebuild(self):
+        saved_center = np.mean(self.rest_pos, axis=0) if self.rest_pos is not None else None
+        spacing = float(np.clip(self.diameter / 2.5, 0.007, 0.012))
+        self.particle_spacing = spacing
         pos, vel, mass, springs, rest, stiff = create_cylinder_body(
-            self.length, self.diameter, self.material, spacing=0.012)
+            self.length, self.diameter, self.material, spacing=spacing)
         self.pos = pos
         self.vel = vel
         self.rest_pos = pos.copy()
@@ -189,11 +193,13 @@ class Penetrator(SoftBody):
         self.active = np.zeros(len(pos), dtype=bool)
         self.static = None
         self.angular_vel = np.zeros(3, dtype=np.float32)
+        if saved_center is not None:
+            offset = saved_center - np.mean(self.rest_pos, axis=0)
+            self.pos += offset
+            self.rest_pos += offset
 
 
 class ArmorPlate(SoftBody):
-    PARTICLE_SPACING = 0.014
-
     def __init__(self, name="Armor"):
         super().__init__(name, "armor", "steel")
         self.width = 0.18
@@ -204,9 +210,11 @@ class ArmorPlate(SoftBody):
         self.rebuild()
 
     def rebuild(self):
+        saved_center = np.mean(self.rest_pos, axis=0) if self.rest_pos is not None else None
+        spacing = float(np.clip(min(self.thickness / 2.5, self.width / 10.0, self.height / 10.0), 0.007, 0.012))
+        self.particle_spacing = spacing
         pos, vel, mass, springs, rest, stiff, static = create_plate_body(
-            self.width, self.height, self.thickness, self.angle,
-            self.material, spacing=self.PARTICLE_SPACING)
+            self.width, self.height, self.thickness, self.angle, self.material, spacing=spacing)
         self.pos = pos
         self.vel = vel
         self.rest_pos = pos.copy()
@@ -218,3 +226,7 @@ class ArmorPlate(SoftBody):
         self.radius = np.full(len(pos), self.particle_size, dtype=np.float32)
         self.active = np.zeros(len(pos), dtype=bool)
         self.angular_vel = np.zeros(3, dtype=np.float32)
+        if saved_center is not None:
+            offset = saved_center - np.mean(self.rest_pos, axis=0)
+            self.pos += offset
+            self.rest_pos += offset

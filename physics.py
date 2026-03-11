@@ -90,6 +90,21 @@ class PhysicsEngine:
                     mask = mask & ~body.static
                 body.pos[mask] += body.vel[mask] * sub_dt
 
+                # Rotational integration: rotate particles around CoM
+                omega = body.angular_vel
+                omega_sq = float(np.dot(omega, omega))
+                if omega_sq > 1e-12 and body.springs is not None and len(body.springs) > 0:
+                    connected = np.zeros(body.n_particles, dtype=bool)
+                    connected[body.springs[:, 0]] = True
+                    connected[body.springs[:, 1]] = True
+                    m_conn = body.mass[connected]
+                    total_m = float(np.sum(m_conn))
+                    if total_m > 1e-12:
+                        com = np.sum(body.pos[connected] * m_conn[:, np.newaxis], axis=0) / total_m
+                        r = body.pos - com
+                        rot_disp = np.cross(omega, r) * sub_dt
+                        body.pos[mask] += rot_disp[mask]
+
         self.time += real_dt
         stats = {'time_us': self.time * 1e6, 'vel': 0, 'pen': 0}
         for b in self.bodies:
@@ -129,7 +144,7 @@ class PhysicsEngine:
         breaking_strain = mat['breaking_strain']
         compression_limit = mat['compression_limit']
 
-        broken = abs_strain > breaking_strain
+        broken = strain > breaking_strain
         if np.any(broken):
             broken_full = np.where(active_mask)[0][np.where(broken)[0]]
             keep = np.ones(len(body.springs), dtype=bool)
@@ -170,7 +185,21 @@ class PhysicsEngine:
         rep_mask = ratio < compression_limit
         if np.any(rep_mask):
             extra = (compression_limit - ratio[rep_mask]) * a_stiff[rep_mask] * 3.0
-            forces[rep_mask] += extra[:, np.newaxis] * dirs[rep_mask]
+            forces[rep_mask] -= extra[:, np.newaxis] * dirs[rep_mask]
+
+        # Plastic deformation: permanently update rest length only when a spring is
+        # compressed further than its previous plastic state. This prevents rest lengths
+        # from collapsing each substep — plasticity ratchets forward, never backward.
+        yield_s = mat['yield_strain']
+        comp_plastic = strain < -yield_s
+        if np.any(comp_plastic):
+            p_idx = np.where(active_mask)[0][comp_plastic]
+            new_rest = lengths[comp_plastic] / (1.0 - yield_s)
+            # Only apply if the spring is being pushed into a MORE compressed state
+            # than it has ever been (new rest < current rest = further plastic deformation).
+            further = new_rest < body.spring_rest[p_idx]
+            if np.any(further):
+                body.spring_rest[p_idx[further]] = new_rest[further]
 
         force_accum = np.zeros_like(body.pos)
         np.add.at(force_accum, i_idx, forces)
@@ -211,7 +240,8 @@ class PhysicsEngine:
             r = body.pos - com
             torque = np.sum(np.cross(r, force_accum), axis=0)
             I = max(np.sum(m_conn * np.sum((body.pos[connected] - com) ** 2, axis=1)), 1e-12)
-            body.angular_vel = (torque / I).astype(np.float32) * dt * 0.99
+            body.angular_vel += (torque / I).astype(np.float32) * dt
+            body.angular_vel *= 0.98
 
     def _handle_collisions(self, dt):
         bodies = self.bodies
@@ -224,6 +254,7 @@ class PhysicsEngine:
         all_particle_indices = []
         all_materials = []
         all_body_types = []
+        all_spacings = []
 
         for bi, body in enumerate(bodies):
             if body.pos is None:
@@ -241,6 +272,7 @@ class PhysicsEngine:
                 'friction_coeff': mat['friction_coeff'], 'density': mat['density']
             })
             all_body_types.append(body.body_type)
+            all_spacings.append(getattr(body, 'particle_spacing', col_dist))
 
         if not all_particles:
             return
@@ -274,6 +306,15 @@ class PhysicsEngine:
                             if i >= j:
                                 continue
                             body_j = all_body_idx[j]
+
+                            # Use the body's own particle spacing as the intra-body
+                            # collision threshold so small-calibre projectiles don't
+                            # explode: neighbours at rest distance are never "colliding".
+                            if body_i == body_j:
+                                eff_col_dist_sq = (all_spacings[body_i] * 0.85) ** 2
+                            else:
+                                eff_col_dist_sq = col_dist_sq
+
                             diff = all_pos[j] - all_pos[i]
                             dist_sq = np.dot(diff, diff)
 
@@ -281,11 +322,11 @@ class PhysicsEngine:
                             vel_sq = np.dot(rel_vel, rel_vel)
 
                             will_collide = False
-                            if dist_sq < col_dist_sq and dist_sq > 1e-12:
+                            if dist_sq < eff_col_dist_sq and dist_sq > 1e-12:
                                 will_collide = True
                             elif vel_sq > 100.0:
                                 fd = diff + rel_vel * dt
-                                if np.dot(fd, fd) < col_dist_sq:
+                                if np.dot(fd, fd) < eff_col_dist_sq:
                                     will_collide = True
                                     diff = fd
                                     dist_sq = np.dot(fd, fd)
@@ -294,11 +335,12 @@ class PhysicsEngine:
                                 continue
 
                             dist = np.sqrt(dist_sq)
+                            eff_col_dist = np.sqrt(eff_col_dist_sq)
                             colliding_particles.add((body_i, all_part_idx[i]))
                             colliding_particles.add((body_j, all_part_idx[j]))
 
                             normal = diff / dist
-                            overlap = col_dist - dist
+                            overlap = eff_col_dist - dist
                             vel_normal = np.dot(rel_vel, normal)
 
                             mat_i = all_materials[body_i]
