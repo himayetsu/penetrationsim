@@ -14,11 +14,13 @@ class PhysicsEngine:
         self.collision_dist = 0.012
         self.impact_occurred = False
         self.impact_start_x = None
+        self.max_penetration = 0.0
 
     def reset(self):
         self.time = 0.0
         self.impact_occurred = False
         self.impact_start_x = None
+        self.max_penetration = 0.0
         for body in self.bodies:
             body.pos = body.rest_pos.copy()
             body.vel.fill(0)
@@ -111,7 +113,9 @@ class PhysicsEngine:
             if b.body_type == 'penetrator':
                 stats['vel'] = np.mean(np.sqrt(np.sum(b.vel ** 2, axis=1)))
                 if self.impact_occurred and self.impact_start_x is not None:
-                    stats['pen'] = (np.max(b.pos[:, 0]) - self.impact_start_x) * 1000
+                    current_pen = (np.max(b.pos[:, 0]) - self.impact_start_x) * 1000
+                    self.max_penetration = max(self.max_penetration, current_pen)
+                    stats['pen'] = self.max_penetration
         return stats
 
     def _apply_springs(self, body, dt):
@@ -244,174 +248,170 @@ class PhysicsEngine:
             body.angular_vel *= 0.98
 
     def _handle_collisions(self, dt):
+        from scipy.spatial import cKDTree
+
         bodies = self.bodies
         col_dist = self.collision_dist
 
-        all_particles = []
-        all_velocities = []
-        all_masses = []
-        all_body_indices = []
-        all_particle_indices = []
-        all_materials = []
-        all_body_types = []
-        all_spacings = []
+        pos_list, vel_list, mass_list = [], [], []
+        body_idx_list, part_idx_list = [], []
+        body_types = []
+        spacings = []
+        # Per-body material scalars, expanded to per-particle arrays below
+        b_strength, b_restitution, b_youngs, b_friction = [], [], [], []
 
         for bi, body in enumerate(bodies):
             if body.pos is None:
                 continue
             n = body.n_particles
-            all_particles.append(body.pos)
-            all_velocities.append(body.vel)
-            all_masses.append(body.mass)
-            all_body_indices.append(np.full(n, bi, dtype=np.int32))
-            all_particle_indices.append(np.arange(n, dtype=np.int32))
+            pos_list.append(body.pos)
+            vel_list.append(body.vel)
+            mass_list.append(body.mass)
+            body_idx_list.append(np.full(n, bi, dtype=np.int32))
+            part_idx_list.append(np.arange(n, dtype=np.int32))
             mat = MATERIALS[body.material]
-            all_materials.append({
-                'hardness': mat['hardness'], 'strength': mat['strength'],
-                'restitution': mat['restitution'], 'youngs_modulus': mat['youngs_modulus'],
-                'friction_coeff': mat['friction_coeff'], 'density': mat['density']
-            })
-            all_body_types.append(body.body_type)
-            all_spacings.append(getattr(body, 'particle_spacing', col_dist))
+            b_strength.append(np.full(n, mat['strength'], dtype=np.float64))
+            b_restitution.append(np.full(n, mat['restitution'], dtype=np.float64))
+            b_youngs.append(np.full(n, mat['youngs_modulus'], dtype=np.float64))
+            b_friction.append(np.full(n, mat['friction_coeff'], dtype=np.float64))
+            body_types.append(body.body_type)
+            spacings.append(getattr(body, 'particle_spacing', col_dist))
 
-        if not all_particles:
+        if not pos_list:
             return
 
-        colliding_particles = set()
-        all_pos = np.vstack(all_particles)
-        all_vel = np.vstack(all_velocities)
-        all_mass = np.concatenate(all_masses)
-        all_body_idx = np.concatenate(all_body_indices)
-        all_part_idx = np.concatenate(all_particle_indices)
-        n_total = len(all_pos)
+        all_pos = np.vstack(pos_list).astype(np.float64)
+        all_vel = np.vstack(vel_list).astype(np.float64)
+        all_mass = np.concatenate(mass_list).astype(np.float64)
+        all_body_idx = np.concatenate(body_idx_list)
+        all_part_idx = np.concatenate(part_idx_list)
+        p_strength = np.concatenate(b_strength)
+        p_restitution = np.concatenate(b_restitution)
+        p_youngs = np.concatenate(b_youngs)
+        p_friction = np.concatenate(b_friction)
 
-        cell_size = col_dist * 1.5
-        col_dist_sq = col_dist ** 2
-        cells = {}
-        cell_coords = np.floor(all_pos / cell_size).astype(np.int32)
-        for i in range(n_total):
-            key = tuple(cell_coords[i])
-            cells.setdefault(key, []).append(i)
+        # 1 = penetrator, 0 = armor/other  (for vectorized pen-armor detection)
+        p_is_pen = np.array([1 if body_types[b] == 'penetrator' else 0
+                              for b in all_body_idx], dtype=np.int8)
+        p_spacing = np.array([spacings[b] for b in all_body_idx])
 
-        for i in range(n_total):
-            body_i = all_body_idx[i]
-            cell = tuple(cell_coords[i])
-            for dx in range(-1, 2):
-                for dy in range(-1, 2):
-                    for dz in range(-1, 2):
-                        nc = (cell[0] + dx, cell[1] + dy, cell[2] + dz)
-                        if nc not in cells:
-                            continue
-                        for j in cells[nc]:
-                            if i >= j:
-                                continue
-                            body_j = all_body_idx[j]
+        # --- Pair finding: cKDTree is C-level, far faster than Python cell loop ---
+        tree = cKDTree(all_pos)
+        pairs = tree.query_pairs(col_dist, output_type='ndarray')
 
-                            # Use the body's own particle spacing as the intra-body
-                            # collision threshold so small-calibre projectiles don't
-                            # explode: neighbours at rest distance are never "colliding".
-                            if body_i == body_j:
-                                eff_col_dist_sq = (all_spacings[body_i] * 0.85) ** 2
-                            else:
-                                eff_col_dist_sq = col_dist_sq
+        if len(pairs) == 0:
+            return
 
-                            diff = all_pos[j] - all_pos[i]
-                            dist_sq = np.dot(diff, diff)
+        ii = pairs[:, 0]
+        jj = pairs[:, 1]
+        bi_arr = all_body_idx[ii]
+        bj_arr = all_body_idx[jj]
+        same_body = bi_arr == bj_arr
 
-                            rel_vel = all_vel[i] - all_vel[j]
-                            vel_sq = np.dot(rel_vel, rel_vel)
+        # Per-pair effective collision distance (intra-body uses particle spacing)
+        eff_cd = np.where(same_body, p_spacing[ii] * 0.85, col_dist)
 
-                            will_collide = False
-                            if dist_sq < eff_col_dist_sq and dist_sq > 1e-12:
-                                will_collide = True
-                            elif vel_sq > 100.0:
-                                fd = diff + rel_vel * dt
-                                if np.dot(fd, fd) < eff_col_dist_sq:
-                                    will_collide = True
-                                    diff = fd
-                                    dist_sq = np.dot(fd, fd)
+        diff = all_pos[jj] - all_pos[ii]          # (M, 3)
+        dist_sq = np.einsum('ij,ij->i', diff, diff)
 
-                            if not will_collide:
-                                continue
+        valid = (dist_sq < eff_cd ** 2) & (dist_sq > 1e-12)
+        if not np.any(valid):
+            return
 
-                            dist = np.sqrt(dist_sq)
-                            eff_col_dist = np.sqrt(eff_col_dist_sq)
-                            colliding_particles.add((body_i, all_part_idx[i]))
-                            colliding_particles.add((body_j, all_part_idx[j]))
+        ii = ii[valid]; jj = jj[valid]
+        bi_arr = bi_arr[valid]; bj_arr = bj_arr[valid]
+        same_body = same_body[valid]
+        eff_cd = eff_cd[valid]
+        diff = diff[valid]
+        dist_sq = dist_sq[valid]
 
-                            normal = diff / dist
-                            overlap = eff_col_dist - dist
-                            vel_normal = np.dot(rel_vel, normal)
+        dist = np.sqrt(dist_sq)
+        normal = diff / dist[:, np.newaxis]
+        overlap = eff_cd - dist
 
-                            mat_i = all_materials[body_i]
-                            mat_j = all_materials[body_j]
-                            s1, s2 = mat_i['strength'], mat_j['strength']
-                            e1, e2 = mat_i['restitution'], mat_j['restitution']
-                            m1, m2 = all_mass[i], all_mass[j]
-                            reduced_mass = (m1 * m2) / (m1 + m2)
+        rel_vel = all_vel[ii] - all_vel[jj]
+        vel_normal = np.einsum('ij,ij->i', rel_vel, normal)
 
-                            ratio1 = s2 / (s1 + s2)
-                            ratio2 = s1 / (s1 + s2)
+        m1 = all_mass[ii]; m2 = all_mass[jj]
+        reduced_mass = m1 * m2 / (m1 + m2)
+        s1 = p_strength[ii]; s2 = p_strength[jj]
+        e1 = p_restitution[ii]; e2 = p_restitution[jj]
+        mu = (p_friction[ii] + p_friction[jj]) * 0.5
+        E_avg = (p_youngs[ii] + p_youngs[jj]) * 0.5
 
-                            is_pen_armor = (
-                                (all_body_types[body_i] == 'penetrator' and all_body_types[body_j] == 'armor') or
-                                (all_body_types[body_i] == 'armor' and all_body_types[body_j] == 'penetrator'))
+        ratio1 = s2 / (s1 + s2)
+        ratio2 = s1 / (s1 + s2)
 
-                            if is_pen_armor and not self.impact_occurred:
-                                self.impact_occurred = True
-                                for body in self.bodies:
-                                    if body.body_type == 'penetrator':
-                                        self.impact_start_x = np.max(body.pos[:, 0])
-                                        break
+        # Impact detection (pen + armor pair with different body indices)
+        is_pen_armor = ((p_is_pen[ii] + p_is_pen[jj]) == 1) & (~same_body)
+        if np.any(is_pen_armor) and not self.impact_occurred:
+            self.impact_occurred = True
+            for body in self.bodies:
+                if body.body_type == 'penetrator':
+                    self.impact_start_x = np.max(body.pos[:, 0])
+                    break
 
-                            corr = 0.8 if is_pen_armor else 0.5
-                            strength_ref = 800e6
-                            contact_stiff = np.sqrt((s1 + s2) / (2.0 * strength_ref))
-                            contact_stiff = np.clip(contact_stiff, 0.5, 1.5)
-                            all_pos[i] -= normal * overlap * ratio1 * corr * contact_stiff
-                            all_pos[j] += normal * overlap * ratio2 * corr * contact_stiff
+        # --- Position corrections (vectorized) ---
+        corr = np.where(is_pen_armor, 0.8, 0.5)
+        contact_stiff = np.clip(np.sqrt((s1 + s2) / (2.0 * 800e6)), 0.5, 1.5)
+        scale_i = (overlap * ratio1 * corr * contact_stiff)[:, np.newaxis]
+        scale_j = (overlap * ratio2 * corr * contact_stiff)[:, np.newaxis]
+        np.add.at(all_pos, ii, -normal * scale_i)
+        np.add.at(all_pos, jj,  normal * scale_j)
 
-                            if vel_normal > 0:
-                                base_e = np.sqrt(e1 * e2)
-                                v_ratio = min(vel_normal / 1000.0, 2.0)
-                                rest = max(0.2, base_e * (1 - 0.3 * v_ratio ** 2))
-                                mu = (mat_i['friction_coeff'] + mat_j['friction_coeff']) / 2
-                                s_ratio = min(s1, s2) / max(s1, s2)
-                                loss = min(0.5, (1 - s_ratio) * 0.4 + min(0.15, mu * vel_normal / 2000.0))
-                                eff_e = max(0.2, min(rest * (1 - loss), base_e))
-                                imp = min((1 + eff_e) * reduced_mass * vel_normal, reduced_mass * vel_normal * 1.5)
-                                imp = max(0.0, imp)
-                                if body_i == body_j:
-                                    imp *= 0.9 if all_body_types[body_i] == 'armor' else 0.85
-                                impulse = imp * normal
-                                all_vel[i] -= impulse / m1
-                                all_vel[j] += impulse / m2
-                            else:
-                                if body_i == body_j:
-                                    E_avg = (mat_i['youngs_modulus'] + mat_j['youngs_modulus']) / 2
-                                    ca = np.pi * (col_dist / 2) ** 2
-                                    s = overlap / max(col_dist, 1e-6)
-                                    rf = min(E_avg * s * ca * 1e-6, reduced_mass * 200.0)
-                                else:
-                                    rf = min(overlap * 50.0, reduced_mass * 50.0)
-                                imp_s = rf * normal * dt
-                                max_vc = 10.0 if body_i == body_j else 5.0
-                                mag = np.linalg.norm(imp_s / reduced_mass)
-                                if mag > 1e-6:
-                                    imp_s = imp_s / np.linalg.norm(imp_s) * min(mag, max_vc) * reduced_mass
-                                all_vel[i] -= imp_s / m1
-                                all_vel[j] += imp_s / m2
+        # --- Velocity updates: approaching pairs ---
+        app = vel_normal > 0
+        if np.any(app):
+            a = np.where(app)[0]
+            base_e = np.sqrt(e1[a] * e2[a])
+            v_ratio = np.minimum(vel_normal[a] / 1000.0, 2.0)
+            rest = np.maximum(0.2, base_e * (1.0 - 0.3 * v_ratio ** 2))
+            sr = np.minimum(s1[a], s2[a]) / np.maximum(s1[a], s2[a])
+            loss = np.minimum(0.5, (1.0 - sr) * 0.4
+                              + np.minimum(0.15, mu[a] * vel_normal[a] / 2000.0))
+            eff_e = np.maximum(0.2, np.minimum(rest * (1.0 - loss), base_e))
+            imp = np.minimum((1.0 + eff_e) * reduced_mass[a] * vel_normal[a],
+                             reduced_mass[a] * vel_normal[a] * 1.5)
+            imp = np.maximum(0.0, imp)
+            intra_scale = np.where(same_body[a],
+                                   np.where(p_is_pen[ii[a]] == 1, 0.85, 0.9),
+                                   1.0)
+            imp *= intra_scale
+            impulse = imp[:, np.newaxis] * normal[a]
+            np.add.at(all_vel, ii[a], -impulse / m1[a, np.newaxis])
+            np.add.at(all_vel, jj[a],  impulse / m2[a, np.newaxis])
 
-        for body_idx, particle_idx in colliding_particles:
-            if body_idx < len(bodies) and bodies[body_idx].active is not None:
-                if particle_idx < len(bodies[body_idx].active):
-                    bodies[body_idx].active[particle_idx] = True
+        # --- Velocity updates: receding / compressed pairs ---
+        rec = ~app
+        if np.any(rec):
+            r = np.where(rec)[0]
+            ca = np.pi * (col_dist * 0.5) ** 2
+            s_ov = overlap[r] / np.maximum(eff_cd[r], 1e-6)
+            same_r = same_body[r]
+            rf_same = np.minimum(E_avg[r] * s_ov * ca * 1e-6, reduced_mass[r] * 200.0)
+            rf_diff = np.minimum(overlap[r] * 50.0, reduced_mass[r] * 50.0)
+            rf = np.where(same_r, rf_same, rf_diff)
+            imp_s = rf[:, np.newaxis] * normal[r] * dt
+            mag = np.linalg.norm(imp_s, axis=1, keepdims=True)
+            max_vc = (np.where(same_r, 10.0, 5.0) * reduced_mass[r])[:, np.newaxis]
+            scale = np.where(mag > 1e-6, np.minimum(1.0, max_vc / np.maximum(mag, 1e-12)), 0.0)
+            imp_s *= scale
+            np.add.at(all_vel, ii[r], -imp_s / m1[r, np.newaxis])
+            np.add.at(all_vel, jj[r],  imp_s / m2[r, np.newaxis])
 
+        # Mark colliding particles active (vectorized per-body grouping)
+        for body_id in np.unique(bi_arr):
+            body = bodies[body_id]
+            if body.active is not None:
+                body.active[all_part_idx[ii[bi_arr == body_id]]] = True
+                body.active[all_part_idx[jj[bj_arr == body_id]]] = True
+
+        # Write back positions and velocities
         offset = 0
         for body in bodies:
             if body.pos is None:
                 continue
             n = body.n_particles
-            body.vel = all_vel[offset:offset + n].copy()
-            body.pos = all_pos[offset:offset + n].copy()
+            body.pos = all_pos[offset:offset + n].astype(np.float32)
+            body.vel = all_vel[offset:offset + n].astype(np.float32)
             offset += n
