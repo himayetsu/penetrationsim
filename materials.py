@@ -169,4 +169,19 @@ MATERIALS = {
         'compression_limit': 0.35,
         'color': np.array([0.92, 0.93, 0.95])
     },
+    'adamantium': {
+        'name': 'Adamantium',
+        'role': 'both',
+        'density': 5e8,
+        'strength': 2e12,
+        'youngs_modulus': 2000e9,
+        'restitution': 0.0,
+        'hardness': 10.0,
+        'poisson_ratio': 0.20,
+        'friction_coeff': 0.15,
+        'breaking_strain': 1.0,
+        'yield_strain': 0.02,
+        'compression_limit': 0.995,
+        'color': np.array([0.75, 0.78, 0.85])
+    },
 }

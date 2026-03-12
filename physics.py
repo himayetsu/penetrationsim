@@ -347,8 +347,8 @@ class PhysicsEngine:
         if np.any(is_pen_armor) and not self.impact_occurred:
             self.impact_occurred = True
             for body in self.bodies:
-                if body.body_type == 'penetrator':
-                    self.impact_start_x = np.max(body.pos[:, 0])
+                if body.body_type == 'armor':
+                    self.impact_start_x = np.min(body.pos[:, 0])
                     break
 
         # --- Position corrections (vectorized) ---

@@ -267,25 +267,18 @@ class OrthoCanvas(QWidget):
                     p.drawLine(int(sx[i]), int(sy[i]), int(sx[j]), int(sy[j]))
 
             vel_mag = np.sqrt(np.sum(body.vel ** 2, axis=1))
-            vel_norm = np.clip(vel_mag / 1800, 0, 1)
+            vel_norm = np.clip(vel_mag / 1800.0, 0.0, 1.0)
+            _t = np.array([0.00, 0.20, 0.40, 0.60, 0.80, 1.00])
+            _rgb = np.array([[0.10, 0.20, 1.00], [0.05, 0.80, 1.00],
+                              [0.10, 1.00, 0.40], [1.00, 1.00, 0.10],
+                              [1.00, 0.45, 0.05], [1.00, 0.05, 0.05]])
+            cr = np.interp(vel_norm, _t, _rgb[:, 0])
+            cg = np.interp(vel_norm, _t, _rgb[:, 1])
+            cb = np.interp(vel_norm, _t, _rgb[:, 2])
 
             radius = 3
             for k in range(len(sx)):
-                vn = vel_norm[k]
-                if vn < 0.2:
-                    t = vn * 5
-                    r = base_color[0] * (1 - t) + 0.2 * t
-                    g = base_color[1] * (1 - t) + 0.5 * t
-                    b = base_color[2] * (1 - t) + 1.0 * t
-                elif vn < 0.4:
-                    r, g, b = 0.2, 0.8, 1.0
-                elif vn < 0.6:
-                    r, g, b = 0.2, 1.0, 0.4
-                elif vn < 0.8:
-                    r, g, b = 1.0, 1.0, 0.2
-                else:
-                    r, g, b = 1.0, 0.3, 0.1
-                color = QColor(int(r * 255), int(g * 255), int(b * 255))
+                color = QColor(int(cr[k] * 255), int(cg[k] * 255), int(cb[k] * 255))
                 p.setPen(Qt.NoPen)
                 p.setBrush(QBrush(color))
                 p.drawEllipse(int(sx[k] - radius), int(sy[k] - radius),

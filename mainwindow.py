@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (
     QGridLayout
 )
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QColor
+from PyQt5.QtGui import QColor, QPainter, QLinearGradient, QFont
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 
@@ -22,6 +22,65 @@ from materials import MATERIALS
 
 # Name (display) -> material key, for change_mat
 NAME_TO_MATERIAL = {m['name']: key for key, m in MATERIALS.items()}
+
+# Shared velocity colormap used by both 3D scatter and the legend widget.
+# (t=0 → slow/blue, t=1 → fast/red)
+VEL_MAX = 1800.0
+VEL_STOPS_T = np.array([0.00, 0.20, 0.40, 0.60, 0.80, 1.00], dtype=np.float32)
+VEL_STOPS_RGB = np.array([
+    [0.10, 0.20, 1.00],  # dark blue  (0 m/s)
+    [0.05, 0.80, 1.00],  # cyan       (360 m/s)
+    [0.10, 1.00, 0.40],  # green      (720 m/s)
+    [1.00, 1.00, 0.10],  # yellow     (1080 m/s)
+    [1.00, 0.45, 0.05],  # orange     (1440 m/s)
+    [1.00, 0.05, 0.05],  # red        (1800 m/s)
+], dtype=np.float32)
+
+
+class VelocityLegend(QWidget):
+    """Compact velocity colorbar overlaid on the 3D viewport."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(82, 210)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+    def paintEvent(self, event):
+        BAR_X, BAR_Y, BAR_W, BAR_H = 10, 20, 14, 160
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+
+        # Dark background panel
+        p.fillRect(0, 0, self.width(), self.height(), QColor(18, 18, 18, 190))
+
+        # Gradient bar: bottom = slow (blue), top = fast (red)
+        grad = QLinearGradient(BAR_X, BAR_Y + BAR_H, BAR_X, BAR_Y)
+        for t, rgb in zip(VEL_STOPS_T, VEL_STOPS_RGB):
+            grad.setColorAt(float(t), QColor(int(rgb[0]*255), int(rgb[1]*255), int(rgb[2]*255)))
+        p.fillRect(BAR_X, BAR_Y, BAR_W, BAR_H, grad)
+        p.setPen(QColor(55, 55, 55))
+        p.drawRect(BAR_X, BAR_Y, BAR_W - 1, BAR_H - 1)
+
+        # Tick marks and labels
+        p.setFont(QFont('Segoe UI', 7))
+        for v in (0, 360, 720, 1080, 1440, 1800):
+            t = v / VEL_MAX
+            y = int(BAR_Y + BAR_H * (1.0 - t))
+            p.setPen(QColor(130, 130, 130))
+            p.drawLine(BAR_X + BAR_W, y, BAR_X + BAR_W + 4, y)
+            p.setPen(QColor(210, 210, 210))
+            p.drawText(BAR_X + BAR_W + 6, y + 4, str(v))
+
+        # "m/s" rotated title
+        p.setPen(QColor(170, 170, 170))
+        p.setFont(QFont('Segoe UI', 7))
+        p.save()
+        p.translate(BAR_X - 3, BAR_Y + BAR_H // 2 + 14)
+        p.rotate(-90)
+        p.drawText(-14, 0, 'm/s')
+        p.restore()
+        p.end()
 
 
 def _materials_for_role(role):
@@ -57,6 +116,8 @@ class MainWindow(QMainWindow):
         self.show_springs = True
         self.quad_mode = False
         self.ortho_views = []
+        self.show_penetrator = True
+        self.show_armor = True
 
         self.setup_ui()
         self.timer = QTimer()
@@ -83,6 +144,9 @@ class MainWindow(QMainWindow):
 
         self.view_grid.addWidget(self.view, 0, 0, 2, 2)
         self.setCentralWidget(self.view_container)
+
+        self.vel_legend = VelocityLegend(self.view)
+        self.vel_legend.show()
 
         scene_dock = QDockWidget("Scene", self)
         scene_w = QWidget()
@@ -185,6 +249,17 @@ class MainWindow(QMainWindow):
         self.view_combo.setMinimumWidth(110)
         row2.addWidget(self.view_combo)
 
+        row2.addSpacing(10)
+        self.pen_vis_cb = QCheckBox("Projectile")
+        self.pen_vis_cb.setChecked(True)
+        self.pen_vis_cb.toggled.connect(self.toggle_penetrator_vis)
+        row2.addWidget(self.pen_vis_cb)
+
+        self.armor_vis_cb = QCheckBox("Armor")
+        self.armor_vis_cb.setChecked(True)
+        self.armor_vis_cb.toggled.connect(self.toggle_armor_vis)
+        row2.addWidget(self.armor_vis_cb)
+
         row2.addStretch()
 
         tl_l.addLayout(row1)
@@ -196,6 +271,13 @@ class MainWindow(QMainWindow):
         self._armor_rebuild_timer.setSingleShot(True)
         self._armor_rebuild_body = None
         self._armor_rebuild_timer.timeout.connect(self._do_armor_rebuild)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'vel_legend'):
+            lw, lh = self.vel_legend.width(), self.vel_legend.height()
+            self.vel_legend.move(self.view.width() - lw - 12,
+                                 self.view.height() - lh - 12)
 
     def toggle_ortho(self):
         self.view.ortho = self.ortho_btn.isChecked()
@@ -301,40 +383,54 @@ class MainWindow(QMainWindow):
             body.lines = lines
             self.view.addItem(lines)
 
+    def toggle_penetrator_vis(self, show):
+        self.show_penetrator = show
+        for body in self.physics.bodies:
+            if body.body_type == 'penetrator':
+                self.update_visuals(body)
+
+    def toggle_armor_vis(self, show):
+        self.show_armor = show
+        for body in self.physics.bodies:
+            if body.body_type == 'armor':
+                self.update_visuals(body)
+
     def update_visuals(self, body):
         if body.scatter is None:
             return
-        mat = MATERIALS[body.material]
-        colors = np.zeros((body.n_particles, 4), dtype=np.float32)
-        vel_mag = np.sqrt(np.sum(body.vel ** 2, axis=1))
-        vel_norm = np.clip(vel_mag / 1800, 0, 1)
-        mc = mat['color']
 
-        m1 = vel_norm < 0.2
-        m2 = (vel_norm >= 0.2) & (vel_norm < 0.4)
-        m3 = (vel_norm >= 0.4) & (vel_norm < 0.6)
-        m4 = (vel_norm >= 0.6) & (vel_norm < 0.8)
-        m5 = vel_norm >= 0.8
-        colors[m1, :3] = mc * (1 - vel_norm[m1, np.newaxis] * 2) + np.array([0.2, 0.5, 1.0]) * (vel_norm[m1, np.newaxis] * 2)
-        colors[m2, :3] = [0.2, 0.8, 1.0]
-        colors[m3, :3] = [0.2, 1.0, 0.4]
-        colors[m4, :3] = [1.0, 1.0, 0.2]
-        colors[m5, :3] = [1.0, 0.3, 0.1]
+        # Visibility toggle
+        visible = (self.show_penetrator if body.body_type == 'penetrator'
+                   else self.show_armor)
+        body.scatter.setVisible(visible)
+        if body.lines is not None:
+            body.lines.setVisible(visible and self.show_springs
+                                  and body.springs is not None
+                                  and len(body.springs) > 0)
+
+        colors = np.zeros((body.n_particles, 4), dtype=np.float32)
+        if body.body_type == 'penetrator':
+            # Velocity gradient on projectile
+            vel_mag = np.sqrt(np.sum(body.vel ** 2, axis=1))
+            vel_norm = np.clip(vel_mag / VEL_MAX, 0.0, 1.0)
+            colors[:, 0] = np.interp(vel_norm, VEL_STOPS_T, VEL_STOPS_RGB[:, 0])
+            colors[:, 1] = np.interp(vel_norm, VEL_STOPS_T, VEL_STOPS_RGB[:, 1])
+            colors[:, 2] = np.interp(vel_norm, VEL_STOPS_T, VEL_STOPS_RGB[:, 2])
+        else:
+            # Armor uses flat material color
+            colors[:, :3] = MATERIALS[body.material]['color']
         colors[:, 3] = 1.0
         if body.selected:
             colors[:, :3] = np.clip(colors[:, :3] + 0.1, 0, 1)
         body.scatter.setData(pos=body.pos, color=colors)
 
-        if body.lines is not None:
-            if body.springs is not None and len(body.springs) > 0 and self.show_springs:
+        if body.lines is not None and visible and self.show_springs:
+            if body.springs is not None and len(body.springs) > 0:
                 lp = np.zeros((len(body.springs) * 2, 3), dtype=np.float32)
                 for k, (i, j) in enumerate(body.springs):
                     lp[k * 2] = body.pos[i]
                     lp[k * 2 + 1] = body.pos[j]
                 body.lines.setData(pos=lp)
-                body.lines.setVisible(True)
-            else:
-                body.lines.setVisible(False)
 
     def rebuild_visuals(self, body):
         if body.scatter:
@@ -400,8 +496,10 @@ class MainWindow(QMainWindow):
         ml = QVBoxLayout(mat_grp)
         mat_cb = QComboBox()
         role = 'penetrator' if body.body_type == 'penetrator' else 'armor'
+        mat_cb.blockSignals(True)
         mat_cb.addItems(_materials_for_role(role))
         mat_cb.setCurrentText(MATERIALS[body.material]['name'])
+        mat_cb.blockSignals(False)
         mat_cb.currentTextChanged.connect(lambda t: self.change_mat(body, t))
         ml.addWidget(mat_cb)
         self.props_box.addWidget(mat_grp)
@@ -409,18 +507,18 @@ class MainWindow(QMainWindow):
         dim = QGroupBox("Dimensions")
         dl = QVBoxLayout(dim)
         if body.body_type == 'penetrator':
-            self._spin("Length (mm)", 1, 10000, int(body.length * 1000),
+            self._spin("Length (mm)", 1, 10000, round(body.length * 1000),
                        lambda v: self.change_dim(body, 'length', v / 1000), dl)
-            self._spin("Diameter (mm)", 1, 1000, int(body.diameter * 1000),
+            self._spin("Diameter (mm)", 1, 1000, round(body.diameter * 1000),
                        lambda v: self.change_dim(body, 'diameter', v / 1000), dl)
-            self._spin("Velocity (m/s)", 1, 10000, int(body.initial_velocity),
+            self._spin("Velocity (m/s)", 1, 10000, round(body.initial_velocity),
                        lambda v: setattr(body, 'initial_velocity', float(v)), dl, 50)
         else:
-            self._spin("Width (mm)", 1, 10000, int(body.width * 1000),
+            self._spin("Width (mm)", 1, 10000, round(body.width * 1000),
                        lambda v: self.change_dim(body, 'width', v / 1000), dl)
-            self._spin("Height (mm)", 1, 10000, int(body.height * 1000),
+            self._spin("Height (mm)", 1, 10000, round(body.height * 1000),
                        lambda v: self.change_dim(body, 'height', v / 1000), dl)
-            self._spin("Thickness (mm)", 1, 10000, int(body.thickness * 1000),
+            self._spin("Thickness (mm)", 1, 10000, round(body.thickness * 1000),
                        lambda v: self.change_dim(body, 'thickness', v / 1000), dl)
             self._spin("Angle (°)", 0, 90, body.angle,
                        lambda v: self.change_dim(body, 'angle', v), dl)
@@ -430,9 +528,11 @@ class MainWindow(QMainWindow):
         h = QHBoxLayout()
         h.addWidget(QLabel(label))
         s = QSpinBox()
+        s.blockSignals(True)
         s.setRange(mn, mx)
         s.setValue(val)
         s.setSingleStep(step)
+        s.blockSignals(False)
         s.valueChanged.connect(cb)
         h.addWidget(s)
         layout.addLayout(h)
@@ -470,39 +570,71 @@ class MainWindow(QMainWindow):
             self.update_tree()
             self.clear_props()
 
+    def _save_reset_snapshot(self):
+        """Save a full snapshot of all body arrays so reset_sim can restore them exactly."""
+        self.physics.reset()  # put bodies in clean initial state first
+        for b in self.physics.bodies:
+            b._snap_rest_pos   = b.rest_pos.copy()
+            b._snap_pos        = b.pos.copy()
+            b._snap_vel        = b.vel.copy()
+            b._snap_mass       = b.mass.copy()
+            b._snap_active     = b.active.copy() if b.active is not None else None
+            b._snap_radius     = b.radius.copy() if b.radius is not None else None
+            b._snap_springs    = b.springs.copy() if b.springs is not None else None
+            b._snap_spring_rest  = b.spring_rest.copy() if b.spring_rest is not None else None
+            b._snap_spring_stiff = b.spring_stiff.copy() if b.spring_stiff is not None else None
+
     def toggle_play(self):
         self.running = self.play_btn.isChecked()
         if self.running:
             self.play_btn.setText("⏸ Pause")
+            self._armor_rebuild_timer.stop()
+            self._armor_rebuild_body = None
             if not self.simulation_started:
-                for b in self.physics.bodies:
-                    b._reset_rest_pos = b.rest_pos.copy()
-                    b._reset_springs = b.springs.copy() if b.springs is not None else None
-                    b._reset_spring_rest = b.spring_rest.copy() if b.spring_rest is not None else None
-                    b._reset_spring_stiff = b.spring_stiff.copy() if b.spring_stiff is not None else None
-                self.physics.reset()
+                self._save_reset_snapshot()
                 for b in self.physics.bodies:
                     self.update_visuals(b)
                 self.simulation_started = True
+            self.gizmo.detach()
             self.timer.start(16)
         else:
             self.play_btn.setText("▶ Play")
             self.timer.stop()
+            if self.selected:
+                self.gizmo.attach(self.selected)
 
     def reset_sim(self):
         self.running = False
         self.play_btn.setChecked(False)
         self.play_btn.setText("▶ Play")
         self.timer.stop()
+        self._armor_rebuild_timer.stop()
+        self._armor_rebuild_body = None
         for b in self.physics.bodies:
-            if hasattr(b, '_reset_rest_pos'):
-                b.rest_pos = b._reset_rest_pos.copy()
-                b.pos = b._reset_rest_pos.copy()
-                if b._reset_springs is not None:
-                    b.springs = b._reset_springs.copy()
-                    b.spring_rest = b._reset_spring_rest.copy()
-                    b.spring_stiff = b._reset_spring_stiff.copy()
-        self.physics.reset()
+            if not hasattr(b, '_snap_rest_pos'):
+                continue
+            b.rest_pos    = b._snap_rest_pos.copy()
+            b.pos         = b._snap_pos.copy()
+            b.vel         = b._snap_vel.copy()
+            b.mass        = b._snap_mass.copy()
+            if b._snap_active is not None:
+                b.active  = b._snap_active.copy()
+            if b._snap_radius is not None:
+                b.radius  = b._snap_radius.copy()
+            if b._snap_springs is not None:
+                b.springs      = b._snap_springs.copy()
+                b.spring_rest  = b._snap_spring_rest.copy()
+                b.spring_stiff = b._snap_spring_stiff.copy()
+        # reset physics-engine counters and angular velocity only
+        self.physics.time = 0.0
+        self.physics.impact_occurred = False
+        self.physics.impact_start_x = None
+        self.physics.max_penetration = 0.0
+        for b in self.physics.bodies:
+            b.angular_vel = np.zeros(3, dtype=np.float32)
+            if b.static is not None:
+                b.pos[b.static] = b.rest_pos[b.static].copy()
+                b.vel[b.static] = 0.0
         self.simulation_started = False
         for b in self.physics.bodies:
             self.rebuild_visuals(b)
