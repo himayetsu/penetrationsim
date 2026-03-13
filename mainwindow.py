@@ -520,7 +520,7 @@ class MainWindow(QMainWindow):
                        lambda v: self.change_dim(body, 'height', v / 1000), dl)
             self._spin("Thickness (mm)", 1, 10000, round(body.thickness * 1000),
                        lambda v: self.change_dim(body, 'thickness', v / 1000), dl)
-            self._spin("Angle (°)", 0, 90, body.angle,
+            self._spin("Angle (°)", -90, 90, body.angle,
                        lambda v: self.change_dim(body, 'angle', v), dl)
         self.props_box.addWidget(dim)
 

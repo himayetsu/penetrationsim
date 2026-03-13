@@ -5,7 +5,8 @@
       "Bash(pip install:*)",
       "Bash(python -c \"from scipy.spatial import cKDTree; import numpy as np; pts = np.random.rand\\(500,3\\).astype\\(np.float64\\); tree = cKDTree\\(pts\\); pairs = tree.query_pairs\\(0.05, output_type=''ndarray''\\); print\\(''scipy OK, pairs shape:'', pairs.shape\\)\")",
       "Bash(python -c \"from physics import PhysicsEngine; print\\(''physics OK''\\)\")",
-      "Bash(python -c \":*)"
+      "Bash(python -c \":*)",
+      "WebSearch"
     ]
   }
 }
