@@ -2,12 +2,13 @@
 """Main window: docks, scene tree, properties, simulation controls, visuals."""
 
 import sys
+import json
 import numpy as np
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QSlider, QComboBox, QGroupBox, QSpinBox,
     QTreeWidget, QTreeWidgetItem, QScrollArea, QDockWidget, QCheckBox,
-    QGridLayout
+    QGridLayout, QFileDialog, QMessageBox
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QPainter, QLinearGradient, QFont
@@ -170,6 +171,15 @@ class MainWindow(QMainWindow):
         btn_del = QPushButton("Delete")
         btn_del.clicked.connect(self.delete_selected)
         scene_l.addWidget(btn_del)
+
+        io_row = QHBoxLayout()
+        btn_export = QPushButton("Export Layout")
+        btn_export.clicked.connect(self.export_layout)
+        btn_import = QPushButton("Import Layout")
+        btn_import.clicked.connect(self.import_layout)
+        io_row.addWidget(btn_export)
+        io_row.addWidget(btn_import)
+        scene_l.addLayout(io_row)
 
         scene_dock.setWidget(scene_w)
         self.addDockWidget(Qt.LeftDockWidgetArea, scene_dock)
@@ -557,6 +567,100 @@ class MainWindow(QMainWindow):
         else:
             body.rebuild()
             self.rebuild_visuals(body)
+
+    def export_layout(self):
+        path, _ = QFileDialog.getSaveFileName(self, "Export Layout", "", "Layout Files (*.json)")
+        if not path:
+            return
+        bodies_data = []
+        for body in self.physics.bodies:
+            entry = {
+                'type': body.body_type,
+                'name': body.name,
+                'material': body.material,
+                'particle_size': body.particle_size,
+            }
+            if body.body_type == 'penetrator':
+                entry.update({
+                    'length': body.length,
+                    'diameter': body.diameter,
+                    'initial_velocity': body.initial_velocity,
+                })
+            else:
+                entry.update({
+                    'width': body.width,
+                    'height': body.height,
+                    'thickness': body.thickness,
+                    'angle': body.angle,
+                })
+            entry['center'] = np.mean(body.pos, axis=0).tolist()
+            bodies_data.append(entry)
+        with open(path, 'w') as f:
+            json.dump({'version': 1, 'bodies': bodies_data}, f, indent=2)
+
+    def import_layout(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Import Layout", "", "Layout Files (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, 'r') as f:
+                data = json.load(f)
+        except Exception as e:
+            QMessageBox.critical(self, "Import Error", str(e))
+            return
+
+        # Stop and clear current scene
+        self.running = False
+        self.play_btn.setChecked(False)
+        self.play_btn.setText("▶ Play")
+        self.timer.stop()
+        self._armor_rebuild_timer.stop()
+        self._armor_rebuild_body = None
+        self.selected = None
+        self.gizmo.detach()
+        for body in self.physics.bodies:
+            if body.scatter:
+                self.view.removeItem(body.scatter)
+            if body.lines:
+                self.view.removeItem(body.lines)
+        self.physics.bodies.clear()
+        self.physics.time = 0.0
+        self.physics.impact_occurred = False
+        self.physics.impact_start_x = None
+        self.physics.max_penetration = 0.0
+        self.simulation_started = False
+        self.clear_props()
+
+        for entry in data.get('bodies', []):
+            if entry['type'] == 'penetrator':
+                body = Penetrator(entry['name'])
+                body.material = entry['material']
+                body.length = entry['length']
+                body.diameter = entry['diameter']
+                body.initial_velocity = entry['initial_velocity']
+                body.particle_size = entry.get('particle_size', body.particle_size)
+            else:
+                body = ArmorPlate(entry['name'])
+                body.material = entry['material']
+                body.width = entry['width']
+                body.height = entry['height']
+                body.thickness = entry['thickness']
+                body.angle = entry['angle']
+                body.particle_size = entry.get('particle_size', body.particle_size)
+            body.rebuild()
+            if 'center' in entry:
+                saved = np.array(entry['center'], dtype=np.float32)
+                offset = saved - np.mean(body.pos, axis=0)
+                body.pos += offset
+                body.rest_pos += offset
+            self.physics.bodies.append(body)
+            self.create_visuals(body)
+
+        self.update_tree()
+        self.time_lbl.setText("Time: 0.0 μs")
+        self.pen_lbl.setText("Pen: 0 mm")
+        if self.physics.bodies:
+            self.select_body(self.physics.bodies[0])
 
     def delete_selected(self):
         if self.selected:

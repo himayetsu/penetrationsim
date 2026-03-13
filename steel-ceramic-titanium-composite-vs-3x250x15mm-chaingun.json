@@ -1,0 +1,102 @@
+{
+  "version": 1,
+  "bodies": [
+    {
+      "type": "penetrator",
+      "name": "Penetrator.001",
+      "material": "depleted_uranium",
+      "particle_size": 0.004,
+      "length": 0.2,
+      "diameter": 0.015,
+      "initial_velocity": 1900.0
+    },
+    {
+      "type": "armor",
+      "name": "Armor.001",
+      "material": "steel",
+      "particle_size": 0.005,
+      "width": 0.2,
+      "height": 0.1,
+      "thickness": 0.04,
+      "angle": 60
+    },
+    {
+      "type": "armor",
+      "name": "Armor.002",
+      "material": "boron_carbide",
+      "particle_size": 0.005,
+      "width": 0.2,
+      "height": 0.1,
+      "thickness": 0.02,
+      "angle": 60
+    },
+    {
+      "type": "armor",
+      "name": "Armor.003",
+      "material": "titanium",
+      "particle_size": 0.005,
+      "width": 0.2,
+      "height": 0.1,
+      "thickness": 0.02,
+      "angle": 60
+    },
+    {
+      "type": "armor",
+      "name": "Armor.004",
+      "material": "steel",
+      "particle_size": 0.005,
+      "width": 0.11,
+      "height": 0.1,
+      "thickness": 0.038,
+      "angle": -30
+    },
+    {
+      "type": "armor",
+      "name": "Armor.005",
+      "material": "steel",
+      "particle_size": 0.005,
+      "width": 0.2,
+      "height": 0.1,
+      "thickness": 0.007,
+      "angle": 60
+    },
+    {
+      "type": "armor",
+      "name": "Armor.006",
+      "material": "adamantium",
+      "particle_size": 0.005,
+      "width": 0.6,
+      "height": 0.1,
+      "thickness": 0.007,
+      "angle": 90
+    },
+    {
+      "type": "armor",
+      "name": "Armor.007",
+      "material": "adamantium",
+      "particle_size": 0.005,
+      "width": 0.6,
+      "height": 0.1,
+      "thickness": 0.007,
+      "angle": 90
+    },
+    {
+      "type": "penetrator",
+      "name": "Penetrator.002",
+      "material": "depleted_uranium",
+      "particle_size": 0.004,
+      "length": 0.2,
+      "diameter": 0.015,
+      "initial_velocity": 1900.0
+    },
+    {
+      "type": "penetrator",
+      "name": "Penetrator.003",
+      "material": "depleted_uranium",
+      "particle_size": 0.004,
+      "length": 0.2,
+      "diameter": 0.015,
+      "initial_velocity": 1900.0
+    }
+  ]
+}
