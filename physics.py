@@ -19,6 +19,7 @@ class PhysicsEngine:
     def reset(self):
         self.time = 0.0
         self.impact_occurred = False
+        
         self.impact_start_x = None
         self.max_penetration = 0.0
         for body in self.bodies:
@@ -185,11 +186,29 @@ class PhysicsEngine:
         force_mag = a_stiff * strain
         forces = force_mag[:, np.newaxis] * dirs
 
-        ratio = lengths / a_rest
-        rep_mask = ratio < compression_limit
-        if np.any(rep_mask):
-            extra = (compression_limit - ratio[rep_mask]) * a_stiff[rep_mask] * 3.0
-            forces[rep_mask] -= extra[:, np.newaxis] * dirs[rep_mask]
+        # Progressive compressive hardening for penetrators: as a spring approaches
+        # its material's minimum compression ratio, force scales up nonlinearly,
+        # acting as a smooth hard wall. frac=0 at zero compression, frac→1 at limit.
+        if body.body_type == 'penetrator':
+            min_ratio = mat.get('spring_min_ratio', 0.0)
+            if min_ratio > 0.0:
+                max_comp_strain = -(1.0 - min_ratio)
+                comp_mask = strain < 0
+                if np.any(comp_mask):
+                    frac = np.clip(strain[comp_mask] / max_comp_strain, 0.0, 0.98)
+                    hardening = 1.0 + frac ** 2 / (1.0 - frac + 1e-3)
+                    force_mag[comp_mask] *= hardening
+                    forces[comp_mask] = force_mag[comp_mask, np.newaxis] * dirs[comp_mask]
+
+        # Soft repulsion backstop for armor bodies. Penetrators skip this: their
+        # progressive hardening (spring_min_ratio) engages at ~5-12% compression,
+        # far before compression_limit (40-55%) would ever be reached.
+        if body.body_type != 'penetrator':
+            ratio = lengths / a_rest
+            rep_mask = ratio < compression_limit
+            if np.any(rep_mask):
+                extra = (compression_limit - ratio[rep_mask]) * a_stiff[rep_mask] * 3.0
+                forces[rep_mask] -= extra[:, np.newaxis] * dirs[rep_mask]
 
         # Plastic deformation: permanently update rest length only when a spring is
         # compressed further than its previous plastic state. This prevents rest lengths

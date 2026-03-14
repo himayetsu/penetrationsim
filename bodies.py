@@ -95,6 +95,12 @@ def create_cylinder_body(length, diameter, material, spacing=None):
     # k_i = E * scale * L0_i  →  K_eff = k_i / L0_i = E * scale (same for all spring lengths)
     k_per_unit = mat['youngs_modulus'] * 3e-4
     spring_stiff = (k_per_unit * spring_rest).astype(np.float32)
+    # Diagonal springs (rest > spacing*1.1) are the sole source of shear resistance in this
+    # lattice. Boost them so the effective shear modulus (G ≈ E/2.6 for ν≈0.29) is correct,
+    # preventing lateral drift when the projectile hits armor at an angle.
+    shear_boost = mat.get('shear_boost', 2.5)
+    diag_mask = spring_rest > spacing * 1.1
+    spring_stiff[diag_mask] *= shear_boost
     return pos, vel, mass, spring_indices, spring_rest, spring_stiff
 
 
