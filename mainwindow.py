@@ -598,7 +598,7 @@ class MainWindow(QMainWindow):
             self.rebuild_visuals(body)
 
     def export_layout(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Export Layout", "", "Layout Files (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Layout", "./savedata", "Layout Files (*.json)")
         if not path:
             return
         bodies_data = []
@@ -628,7 +628,7 @@ class MainWindow(QMainWindow):
             json.dump({'version': 1, 'bodies': bodies_data}, f, indent=2)
 
     def import_layout(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Import Layout", "", "Layout Files (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, "Import Layout", "./savedata", "Layout Files (*.json)")
         if not path:
             return
         try:
