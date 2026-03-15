@@ -36,6 +36,7 @@ class PhysicsEngine:
                 j_idx = body.springs[:, 1]
                 delta = body.pos[j_idx] - body.pos[i_idx]
                 body.spring_rest = np.linalg.norm(delta, axis=1).copy()
+                body.spring_rest_original = body.spring_rest.copy()
 
             if body.body_type == 'penetrator':
                 body.vel[:, 0] = body.initial_velocity
@@ -134,6 +135,7 @@ class PhysicsEngine:
 
         a_springs = body.springs[active_mask]
         a_rest = body.spring_rest[active_mask]
+        a_rest_orig = body.spring_rest_original[active_mask]
         a_stiff = body.spring_stiff[active_mask]
         i_idx = a_springs[:, 0]
         j_idx = a_springs[:, 1]
@@ -149,13 +151,21 @@ class PhysicsEngine:
         breaking_strain = mat['breaking_strain']
         compression_limit = mat['compression_limit']
 
-        broken = strain > breaking_strain
+        # Break based on total elongation from the ORIGINAL rest length, not the
+        # plastic rest length. Plasticity ratchets spring_rest, so strain vs spring_rest
+        # stays near yield_s and never reaches breaking_strain without this.
+        strain_from_orig = (lengths - a_rest_orig) / a_rest_orig
+        broken = strain_from_orig > breaking_strain
+        comp_break = mat.get('compression_breaking_strain', None)
+        if comp_break is not None:
+            broken |= (strain_from_orig < -comp_break)
         if np.any(broken):
             broken_full = np.where(active_mask)[0][np.where(broken)[0]]
             keep = np.ones(len(body.springs), dtype=bool)
             keep[broken_full] = False
             body.springs = body.springs[keep]
             body.spring_rest = body.spring_rest[keep]
+            body.spring_rest_original = body.spring_rest_original[keep]
             body.spring_stiff = body.spring_stiff[keep]
 
             if len(body.springs) == 0:
@@ -173,6 +183,7 @@ class PhysicsEngine:
 
             a_springs = body.springs[active_mask]
             a_rest = body.spring_rest[active_mask]
+            a_rest_orig = body.spring_rest_original[active_mask]
             a_stiff = body.spring_stiff[active_mask]
             i_idx = a_springs[:, 0]
             j_idx = a_springs[:, 1]
@@ -186,19 +197,28 @@ class PhysicsEngine:
         force_mag = a_stiff * strain
         forces = force_mag[:, np.newaxis] * dirs
 
-        # Progressive compressive hardening for penetrators: as a spring approaches
-        # its material's minimum compression ratio, force scales up nonlinearly,
-        # acting as a smooth hard wall. frac=0 at zero compression, frac→1 at limit.
+        # Progressive compressive hardening.
+        # Penetrators: all springs use material spring_min_ratio (keeps core compact).
+        # Armor: only diagonal springs get the floor (prevents lattice inversion).
+        #   Axial springs on armor must be free to compress so the penetrator can
+        #   plastically deform and fracture them — adding a floor here causes elastic
+        #   bounce-back instead of plastic failure, killing penetration depth.
+        mat_floor = mat.get('spring_min_ratio', 0.75)
+        spacing = getattr(body, 'particle_spacing', 0.012)
+        diag_mask = a_rest > spacing * 1.1
         if body.body_type == 'penetrator':
-            min_ratio = mat.get('spring_min_ratio', 0.0)
-            if min_ratio > 0.0:
-                max_comp_strain = -(1.0 - min_ratio)
-                comp_mask = strain < 0
-                if np.any(comp_mask):
-                    frac = np.clip(strain[comp_mask] / max_comp_strain, 0.0, 0.98)
-                    hardening = 1.0 + frac ** 2 / (1.0 - frac + 1e-3)
-                    force_mag[comp_mask] *= hardening
-                    forces[comp_mask] = force_mag[comp_mask, np.newaxis] * dirs[comp_mask]
+            per_min = np.full(len(a_rest), mat_floor)
+        else:
+            per_min = np.where(diag_mask, mat_floor, 0.0)
+
+        harden_candidates = (strain < 0) & (per_min > 0)
+        if np.any(harden_candidates):
+            mc = harden_candidates
+            max_cs = -(1.0 - per_min[mc])
+            frac = np.clip(strain[mc] / max_cs, 0.0, 0.98)
+            hardening = 1.0 + frac ** 2 / (1.0 - frac + 0.3)  # floor 0.3 caps ~4×; 1e-3 allowed 47× which exceeded critical sub_dt for stiff ceramics
+            force_mag[mc] *= hardening
+            forces[mc] = force_mag[mc, np.newaxis] * dirs[mc]
 
         # Soft repulsion backstop for armor bodies. Penetrators skip this: their
         # progressive hardening (spring_min_ratio) engages at ~5-12% compression,
@@ -210,17 +230,26 @@ class PhysicsEngine:
                 extra = (compression_limit - ratio[rep_mask]) * a_stiff[rep_mask] * 3.0
                 forces[rep_mask] -= extra[:, np.newaxis] * dirs[rep_mask]
 
-        # Plastic deformation: permanently update rest length only when a spring is
-        # compressed further than its previous plastic state. This prevents rest lengths
-        # from collapsing each substep — plasticity ratchets forward, never backward.
+        # Plastic deformation: rest length ratchets to follow deformation in both
+        # directions. Springs resist further change from their current plastic state,
+        # not from their original length. A small elastic tail (yield_s) is preserved
+        # so there is still a restoring force at the new deformed state.
         yield_s = mat['yield_strain']
+
         comp_plastic = strain < -yield_s
         if np.any(comp_plastic):
             p_idx = np.where(active_mask)[0][comp_plastic]
             new_rest = lengths[comp_plastic] / (1.0 - yield_s)
-            # Only apply if the spring is being pushed into a MORE compressed state
-            # than it has ever been (new rest < current rest = further plastic deformation).
             further = new_rest < body.spring_rest[p_idx]
+            if np.any(further):
+                body.spring_rest[p_idx[further]] = new_rest[further]
+
+        tens_plastic = strain > yield_s
+        if np.any(tens_plastic):
+            p_idx = np.where(active_mask)[0][tens_plastic]
+            new_rest = lengths[tens_plastic] / (1.0 + yield_s)
+            # Only ratchet if stretched further than ever before.
+            further = new_rest > body.spring_rest[p_idx]
             if np.any(further):
                 body.spring_rest[p_idx[further]] = new_rest[further]
 
@@ -250,7 +279,7 @@ class PhysicsEngine:
                 if np.all(anchored == prev):
                     break
             damp_mask = nz & anchored
-            body.vel[damp_mask] *= 0.98
+            body.vel[damp_mask] *= 1
 
         connected = np.zeros(body.n_particles, dtype=bool)
         if len(body.springs) > 0:
@@ -264,7 +293,7 @@ class PhysicsEngine:
             torque = np.sum(np.cross(r, force_accum), axis=0)
             I = max(np.sum(m_conn * np.sum((body.pos[connected] - com) ** 2, axis=1)), 1e-12)
             body.angular_vel += (torque / I).astype(np.float32) * dt
-            body.angular_vel *= 0.98
+            body.angular_vel *= 0.7
 
     def _handle_collisions(self, dt):
         from scipy.spatial import cKDTree
@@ -334,6 +363,31 @@ class PhysicsEngine:
         dist_sq = np.einsum('ij,ij->i', diff, diff)
 
         valid = (dist_sq < eff_cd ** 2) & (dist_sq > 1e-12)
+
+        # Spring-connected same-body pairs: the spring already handles their interaction.
+        # Applying a collision impulse on top would destabilise the spring and blow off
+        # closely-spaced particles like nose-tip steps. Skip those pairs here; once a
+        # spring breaks it is removed from body.springs, so the pair re-enters collision.
+        sb_idx = np.where(same_body & valid)[0]
+        if len(sb_idx):
+            body_spring_sets = {}
+            for bi, body in enumerate(bodies):
+                if body.pos is not None and body.springs is not None and len(body.springs) > 0:
+                    s = body.springs
+                    lo = np.minimum(s[:, 0], s[:, 1]).tolist()
+                    hi = np.maximum(s[:, 0], s[:, 1]).tolist()
+                    body_spring_sets[bi] = set(zip(lo, hi))
+            li_arr = all_part_idx[ii[sb_idx]]
+            lj_arr = all_part_idx[jj[sb_idx]]
+            bk_arr = bi_arr[sb_idx]
+            for k in range(len(sb_idx)):
+                bset = body_spring_sets.get(int(bk_arr[k]))
+                if bset:
+                    a, b_ = int(li_arr[k]), int(lj_arr[k])
+                    if a > b_:
+                        a, b_ = b_, a
+                    if (a, b_) in bset:
+                        valid[sb_idx[k]] = False
         if not np.any(valid):
             return
 
@@ -371,7 +425,7 @@ class PhysicsEngine:
                     break
 
         # --- Position corrections (vectorized) ---
-        corr = np.where(is_pen_armor, 0.8, 0.5)
+        corr = np.full(len(is_pen_armor), 0.5)
         contact_stiff = np.clip(np.sqrt((s1 + s2) / (2.0 * 800e6)), 0.5, 1.5)
         scale_i = (overlap * ratio1 * corr * contact_stiff)[:, np.newaxis]
         scale_j = (overlap * ratio2 * corr * contact_stiff)[:, np.newaxis]
@@ -384,7 +438,11 @@ class PhysicsEngine:
             a = np.where(app)[0]
             base_e = np.sqrt(e1[a] * e2[a])
             v_ratio = np.minimum(vel_normal[a] / 1000.0, 2.0)
-            rest = np.maximum(0.2, base_e * (1.0 - 0.3 * v_ratio ** 2))
+            # Lower restitution floor for pen-armor: these are penetrating contacts,
+            # not elastic bounces. The 0.2 floor was adding fake bounce and
+            # over-decelerating the penetrator. Metal-on-metal penetration: ~0.02.
+            rest_min = np.where(is_pen_armor[a], 0.02, 0.2)
+            rest = np.maximum(rest_min, base_e * (1.0 - 0.3 * v_ratio ** 2))
             sr = np.minimum(s1[a], s2[a]) / np.maximum(s1[a], s2[a])
             loss = np.minimum(0.5, (1.0 - sr) * 0.4
                               + np.minimum(0.15, mu[a] * vel_normal[a] / 2000.0))
@@ -392,9 +450,19 @@ class PhysicsEngine:
             imp = np.minimum((1.0 + eff_e) * reduced_mass[a] * vel_normal[a],
                              reduced_mass[a] * vel_normal[a] * 1.5)
             imp = np.maximum(0.0, imp)
+            # Pen-armor impulse scale: inversely proportional to vel_normal so that
+            # oblique impacts (low vel_normal due to cos θ) keep the full 0.4× while
+            # perpendicular impacts (high vel_normal) are scaled down proportionally.
+            # Pivot at 400 m/s: contacts below this get 0.4×, above this scale as
+            # 0.4 × 400 / vel_normal. Prevents perpendicular over-resistance without
+            # touching the angled (60°) calibration where vel_normal ≈ 395–400 m/s.
+            pen_armor_scale = np.where(
+                is_pen_armor[a],
+                np.minimum(0.4, 0.4 * 400.0 / np.maximum(vel_normal[a], 400.0)),
+                1.0)
             intra_scale = np.where(same_body[a],
                                    np.where(p_is_pen[ii[a]] == 1, 0.85, 0.9),
-                                   1.0)
+                                   pen_armor_scale)
             imp *= intra_scale
             impulse = imp[:, np.newaxis] * normal[a]
             np.add.at(all_vel, ii[a], -impulse / m1[a, np.newaxis])

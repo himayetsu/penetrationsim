@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QColor, QPainter, QLinearGradient, QFont
+from PyQt5.QtWidgets import QStylePainter, QStyleOptionComboBox, QStyle
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 
@@ -89,6 +90,30 @@ def _materials_for_role(role):
     return [m['name'] for m in MATERIALS.values() if m.get('role') == role or m.get('role') == 'both']
 
 
+class ElidedComboBox(QComboBox):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLength)
+        self.setMinimumContentsLength(0)
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        return sh.__class__(60, sh.height())
+
+    def minimumSizeHint(self):
+        msh = super().minimumSizeHint()
+        return msh.__class__(60, msh.height())
+
+    def paintEvent(self, event):
+        painter = QStylePainter(self)
+        opt = QStyleOptionComboBox()
+        self.initStyleOption(opt)
+        opt.currentText = self.fontMetrics().elidedText(
+            opt.currentText, Qt.ElideRight, opt.rect.width() - 30)
+        painter.drawComplexControl(QStyle.CC_ComboBox, opt)
+        painter.drawControl(QStyle.CE_ComboBoxLabel, opt)
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -150,6 +175,7 @@ class MainWindow(QMainWindow):
         self.vel_legend.show()
 
         scene_dock = QDockWidget("Scene", self)
+        scene_dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
         scene_w = QWidget()
         scene_l = QVBoxLayout(scene_w)
         scene_l.setContentsMargins(4, 4, 4, 4)
@@ -185,9 +211,11 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.LeftDockWidgetArea, scene_dock)
 
         props_dock = QDockWidget("Properties", self)
+        props_dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
         props_dock.setMinimumWidth(250)
         props_scroll = QScrollArea()
         props_scroll.setWidgetResizable(True)
+        props_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         props_w = QWidget()
         self.props_layout = QVBoxLayout(props_w)
         self.props_layout.setContentsMargins(4, 4, 4, 4)
@@ -200,6 +228,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.RightDockWidgetArea, props_dock)
 
         tl_dock = QDockWidget("Simulation", self)
+        tl_dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
         tl_dock.setMaximumHeight(130)
         tl_w = QWidget()
         tl_l = QVBoxLayout(tl_w)
@@ -504,7 +533,7 @@ class MainWindow(QMainWindow):
 
         mat_grp = QGroupBox("Material")
         ml = QVBoxLayout(mat_grp)
-        mat_cb = QComboBox()
+        mat_cb = ElidedComboBox()
         role = 'penetrator' if body.body_type == 'penetrator' else 'armor'
         mat_cb.blockSignals(True)
         mat_cb.addItems(_materials_for_role(role))

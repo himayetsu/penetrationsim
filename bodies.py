@@ -24,6 +24,7 @@ class SoftBody:
 
         self.springs = None
         self.spring_rest = None
+        self.spring_rest_original = None  # geometric rest lengths, never updated by plasticity
         self.spring_stiff = None
 
         self.scatter = None
@@ -45,7 +46,16 @@ def create_cylinder_body(length, diameter, material, spacing=None):
     radius = diameter / 2
     particles = []
 
-    n_axial = int(length * 0.85 / spacing) + 1
+    # Nose fraction scales with diameter: wider rods need longer tapers
+    # 20mm→20%, 50mm→30%, 122mm→50%
+    nose_fraction = float(np.clip(0.20 + (diameter - 0.020) * 2.941, 0.15, 0.55))
+    body_fraction = 1.0 - nose_fraction
+
+    # Only add nose rings if the body itself has rings (avoids unsupported ring particles
+    # on thin rods where radius < spacing, which causes explosion on small calibres)
+    body_has_rings = (spacing <= radius)
+
+    n_axial = int(length * body_fraction / spacing) + 1
     n_radial = max(1, int(radius / spacing))
 
     for i in range(n_axial):
@@ -60,16 +70,26 @@ def create_cylinder_body(length, diameter, material, spacing=None):
                 angle = 2 * np.pi * j / n_circ
                 particles.append([x, r * np.cos(angle), r * np.sin(angle)])
 
-    nose_length = length * 0.15
-    n_nose = int(nose_length / spacing) + 1
+    body_end_x = (n_axial - 1) * spacing
+    # Nose starts exactly where body ends — no gap, guaranteed spring connectivity
+    nose_length = length - body_end_x
+    n_nose = max(1, int(nose_length / spacing) + 1)
+
     for i in range(1, n_nose + 1):
-        t = i / n_nose
-        x = length * 0.85 + t * nose_length
-        current_r = radius * (1 - t ** 1.2)
-        if current_r < spacing * 0.3:
-            particles.append([x, 0, 0])
-        else:
-            particles.append([x, 0, 0])
+        t = i / n_nose  # 0 → 1 (body end → tip)
+        x = body_end_x + t * nose_length
+        current_r = radius * (1 - t ** 1.3)
+        particles.append([x, 0, 0])
+        if body_has_rings and current_r >= spacing * 0.4:
+            # Inner rings at spacing multiples, outermost ring at actual taper radius
+            # so the outer surface shrinks smoothly (shorter rest lengths = weaker springs naturally)
+            n_inner = max(0, int(current_r / spacing) - 1)
+            for r_idx in range(1, n_inner + 1):
+                r = r_idx * spacing
+                n_circ = max(4, int(2 * np.pi * r / spacing))
+                for j in range(n_circ):
+                    angle = 2 * np.pi * j / n_circ
+                    particles.append([x, r * np.cos(angle), r * np.sin(angle)])
             n_circ = max(4, int(2 * np.pi * current_r / spacing))
             for j in range(n_circ):
                 angle = 2 * np.pi * j / n_circ
@@ -92,12 +112,9 @@ def create_cylinder_body(length, diameter, material, spacing=None):
     springs = np.array(springs, dtype=np.float32)
     spring_indices = springs[:, :2].astype(np.int32)
     spring_rest = springs[:, 2]
-    # k_i = E * scale * L0_i  →  K_eff = k_i / L0_i = E * scale (same for all spring lengths)
-    k_per_unit = mat['youngs_modulus'] * 3e-4
+    k_per_unit = mat['youngs_modulus'] * mat.get('stiffness_scale', 6e-4)
+    # spring_stiff = k * rest_length: shorter nose springs are naturally weaker, no extra scaling needed
     spring_stiff = (k_per_unit * spring_rest).astype(np.float32)
-    # Diagonal springs (rest > spacing*1.1) are the sole source of shear resistance in this
-    # lattice. Boost them so the effective shear modulus (G ≈ E/2.6 for ν≈0.29) is correct,
-    # preventing lateral drift when the projectile hits armor at an angle.
     shear_boost = mat.get('shear_boost', 2.5)
     diag_mask = spring_rest > spacing * 1.1
     spring_stiff[diag_mask] *= shear_boost
@@ -167,9 +184,11 @@ def create_plate_body(width, height, thickness, angle_deg, material, spacing=Non
         spring_indices = np.zeros((0, 2), dtype=np.int32)
         spring_rest = np.zeros(0, dtype=np.float32)
 
-    # Same uniform-K_eff formula as cylinder, with 0.6 factor for plate geometry
-    k_per_unit = mat['youngs_modulus'] * 0.6 * 3e-4
+    k_per_unit = mat['youngs_modulus'] * mat.get('stiffness_scale', 6e-4)
     spring_stiff = (k_per_unit * spring_rest).astype(np.float32)
+    shear_boost = mat.get('shear_boost', 2.2)
+    diag_mask = spring_rest > spacing * 1.1
+    spring_stiff[diag_mask] *= shear_boost
     return pos, vel, mass, spring_indices, spring_rest, spring_stiff, static
 
 
@@ -194,6 +213,7 @@ class Penetrator(SoftBody):
         self.mass = mass
         self.springs = springs
         self.spring_rest = rest
+        self.spring_rest_original = rest.copy()
         self.spring_stiff = stiff
         self.radius = np.full(len(pos), self.particle_size, dtype=np.float32)
         self.active = np.zeros(len(pos), dtype=bool)
@@ -228,6 +248,7 @@ class ArmorPlate(SoftBody):
         self.static = static
         self.springs = springs
         self.spring_rest = rest
+        self.spring_rest_original = rest.copy()
         self.spring_stiff = stiff
         self.radius = np.full(len(pos), self.particle_size, dtype=np.float32)
         self.active = np.zeros(len(pos), dtype=bool)
