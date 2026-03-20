@@ -4,13 +4,21 @@
 import numpy as np
 from PyQt5.QtWidgets import QWidget, QLabel
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor, QMatrix4x4, QVector3D, QPainter, QPen, QBrush
+from PyQt5.QtGui import QColor, QMatrix4x4, QVector3D, QPainter, QPainterPath, QPen, QBrush
 import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 
 from gizmo import TransformGizmo
 from materials import MATERIALS
 
+
+# Velocity → colour ramp (same stops as the 3D scatter in mainwindow.py).
+# Defined once at module level to avoid re-allocation on every paintEvent.
+_VEL_MAX = 1800.0
+_VEL_T   = np.array([0.00, 0.20, 0.40, 0.60, 0.80, 1.00])
+_VEL_RGB = np.array([[0.10, 0.20, 1.00], [0.05, 0.80, 1.00],
+                      [0.10, 1.00, 0.40], [1.00, 1.00, 0.10],
+                      [1.00, 0.45, 0.05], [1.00, 0.05, 0.05]])
 
 PROJ_AXES = {
     'front': (2, 1, 'Z', 'Y'),
@@ -262,19 +270,19 @@ class OrthoCanvas(QWidget):
                 spring_pen.setWidth(1)
                 p.setPen(spring_pen)
                 springs = body.springs
-                for k in range(len(springs)):
-                    i, j = springs[k]
-                    p.drawLine(int(sx[i]), int(sy[i]), int(sx[j]), int(sy[j]))
+                path = QPainterPath()
+                si = springs[:, 0]
+                sj = springs[:, 1]
+                for i, j in zip(si, sj):
+                    path.moveTo(float(sx[i]), float(sy[i]))
+                    path.lineTo(float(sx[j]), float(sy[j]))
+                p.drawPath(path)
 
-            vel_mag = np.sqrt(np.sum(body.vel ** 2, axis=1))
-            vel_norm = np.clip(vel_mag / 1800.0, 0.0, 1.0)
-            _t = np.array([0.00, 0.20, 0.40, 0.60, 0.80, 1.00])
-            _rgb = np.array([[0.10, 0.20, 1.00], [0.05, 0.80, 1.00],
-                              [0.10, 1.00, 0.40], [1.00, 1.00, 0.10],
-                              [1.00, 0.45, 0.05], [1.00, 0.05, 0.05]])
-            cr = np.interp(vel_norm, _t, _rgb[:, 0])
-            cg = np.interp(vel_norm, _t, _rgb[:, 1])
-            cb = np.interp(vel_norm, _t, _rgb[:, 2])
+            vel_mag = np.linalg.norm(body.vel, axis=1)
+            vel_norm = np.clip(vel_mag / _VEL_MAX, 0.0, 1.0)
+            cr = np.interp(vel_norm, _VEL_T, _VEL_RGB[:, 0])
+            cg = np.interp(vel_norm, _VEL_T, _VEL_RGB[:, 1])
+            cb = np.interp(vel_norm, _VEL_T, _VEL_RGB[:, 2])
 
             radius = 3
             for k in range(len(sx)):

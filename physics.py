@@ -2,6 +2,7 @@
 """Physics engine: time stepping, springs, bond breaking, collisions."""
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 from materials import MATERIALS
 
@@ -15,6 +16,8 @@ class PhysicsEngine:
         self.impact_occurred = False
         self.impact_start_x = None
         self.max_penetration = 0.0
+        # Precomputed contact-area constant (depends only on collision_dist).
+        self._ca = np.pi * (self.collision_dist * 0.5) ** 2
 
     def reset(self):
         self.time = 0.0
@@ -253,9 +256,14 @@ class PhysicsEngine:
             if np.any(further):
                 body.spring_rest[p_idx[further]] = new_rest[further]
 
-        force_accum = np.zeros_like(body.pos)
-        np.add.at(force_accum, i_idx, forces)
-        np.add.at(force_accum, j_idx, -forces)
+        # np.bincount is significantly faster than np.add.at for force scatter.
+        n = body.n_particles
+        force_accum = np.empty((n, 3), dtype=np.float32)
+        for d in range(3):
+            force_accum[:, d] = (
+                np.bincount(i_idx, weights=forces[:, d], minlength=n)
+                - np.bincount(j_idx, weights=forces[:, d], minlength=n)
+            )
 
         if body.active is not None:
             if body.static is not None:
@@ -267,19 +275,6 @@ class PhysicsEngine:
 
         nz = update & (body.mass > 0)
         body.vel[nz] += force_accum[nz] / body.mass[nz, np.newaxis] * dt
-
-        if body.body_type == 'armor' and body.static is not None and len(body.springs) > 0:
-            anchored = body.static.copy()
-            si = body.springs[:, 0]
-            sj = body.springs[:, 1]
-            for _ in range(body.n_particles):
-                prev = anchored.copy()
-                anchored[si] |= anchored[sj]
-                anchored[sj] |= anchored[si]
-                if np.all(anchored == prev):
-                    break
-            damp_mask = nz & anchored
-            body.vel[damp_mask] *= 1
 
         connected = np.zeros(body.n_particles, dtype=bool)
         if len(body.springs) > 0:
@@ -296,8 +291,6 @@ class PhysicsEngine:
             body.angular_vel *= 0.7
 
     def _handle_collisions(self, dt):
-        from scipy.spatial import cKDTree
-
         bodies = self.bodies
         col_dist = self.collision_dist
 
@@ -339,9 +332,13 @@ class PhysicsEngine:
         p_friction = np.concatenate(b_friction)
 
         # 1 = penetrator, 0 = armor/other  (for vectorized pen-armor detection)
-        p_is_pen = np.array([1 if body_types[b] == 'penetrator' else 0
-                              for b in all_body_idx], dtype=np.int8)
-        p_spacing = np.array([spacings[b] for b in all_body_idx])
+        # Build per-body lookup first, then index by all_body_idx — avoids a
+        # Python loop over every particle.
+        _is_pen_lut = np.array([1 if bt == 'penetrator' else 0
+                                 for bt in body_types], dtype=np.int8)
+        _spacing_lut = np.array(spacings)
+        p_is_pen   = _is_pen_lut[all_body_idx]
+        p_spacing  = _spacing_lut[all_body_idx]
 
         # --- Pair finding: cKDTree is C-level, far faster than Python cell loop ---
         tree = cKDTree(all_pos)
@@ -370,24 +367,28 @@ class PhysicsEngine:
         # spring breaks it is removed from body.springs, so the pair re-enters collision.
         sb_idx = np.where(same_body & valid)[0]
         if len(sb_idx):
-            body_spring_sets = {}
+            # Encode each spring pair as (lo * N_max + hi) for fast vectorized
+            # membership testing with np.isin instead of a Python loop.
+            N_max = max(b.n_particles for b in bodies if b.pos is not None)
+            body_spring_encoded = {}
             for bi, body in enumerate(bodies):
                 if body.pos is not None and body.springs is not None and len(body.springs) > 0:
                     s = body.springs
-                    lo = np.minimum(s[:, 0], s[:, 1]).tolist()
-                    hi = np.maximum(s[:, 0], s[:, 1]).tolist()
-                    body_spring_sets[bi] = set(zip(lo, hi))
+                    lo = np.minimum(s[:, 0], s[:, 1]).astype(np.int64)
+                    hi = np.maximum(s[:, 0], s[:, 1]).astype(np.int64)
+                    body_spring_encoded[bi] = lo * N_max + hi
             li_arr = all_part_idx[ii[sb_idx]]
             lj_arr = all_part_idx[jj[sb_idx]]
             bk_arr = bi_arr[sb_idx]
-            for k in range(len(sb_idx)):
-                bset = body_spring_sets.get(int(bk_arr[k]))
-                if bset:
-                    a, b_ = int(li_arr[k]), int(lj_arr[k])
-                    if a > b_:
-                        a, b_ = b_, a
-                    if (a, b_) in bset:
-                        valid[sb_idx[k]] = False
+            lo_pairs = np.minimum(li_arr, lj_arr).astype(np.int64)
+            hi_pairs = np.maximum(li_arr, lj_arr).astype(np.int64)
+            pair_encoded = lo_pairs * N_max + hi_pairs
+            for bi, encoded in body_spring_encoded.items():
+                body_mask = bk_arr == bi
+                if not np.any(body_mask):
+                    continue
+                is_spring = np.isin(pair_encoded[body_mask], encoded)
+                valid[sb_idx[body_mask][is_spring]] = False
         if not np.any(valid):
             return
 
@@ -412,8 +413,9 @@ class PhysicsEngine:
         mu = (p_friction[ii] + p_friction[jj]) * 0.5
         E_avg = (p_youngs[ii] + p_youngs[jj]) * 0.5
 
-        ratio1 = s2 / (s1 + s2)
-        ratio2 = s1 / (s1 + s2)
+        s_sum  = s1 + s2
+        ratio1 = s2 / s_sum
+        ratio2 = s1 / s_sum
 
         # Impact detection (pen + armor pair with different body indices)
         is_pen_armor = ((p_is_pen[ii] + p_is_pen[jj]) == 1) & (~same_body)
@@ -425,10 +427,10 @@ class PhysicsEngine:
                     break
 
         # --- Position corrections (vectorized) ---
-        corr = np.full(len(is_pen_armor), 0.5)
-        contact_stiff = np.clip(np.sqrt((s1 + s2) / (2.0 * 800e6)), 0.5, 1.5)
-        scale_i = (overlap * ratio1 * corr * contact_stiff)[:, np.newaxis]
-        scale_j = (overlap * ratio2 * corr * contact_stiff)[:, np.newaxis]
+        contact_stiff = np.clip(np.sqrt(s_sum / (2.0 * 800e6)), 0.5, 1.5)
+        half_stiff = 0.5 * contact_stiff
+        scale_i = (overlap * ratio1 * half_stiff)[:, np.newaxis]
+        scale_j = (overlap * ratio2 * half_stiff)[:, np.newaxis]
         np.add.at(all_pos, ii, -normal * scale_i)
         np.add.at(all_pos, jj,  normal * scale_j)
 
@@ -472,10 +474,9 @@ class PhysicsEngine:
         rec = ~app
         if np.any(rec):
             r = np.where(rec)[0]
-            ca = np.pi * (col_dist * 0.5) ** 2
             s_ov = overlap[r] / np.maximum(eff_cd[r], 1e-6)
             same_r = same_body[r]
-            rf_same = np.minimum(E_avg[r] * s_ov * ca * 1e-6, reduced_mass[r] * 200.0)
+            rf_same = np.minimum(E_avg[r] * s_ov * self._ca * 1e-6, reduced_mass[r] * 200.0)
             rf_diff = np.minimum(overlap[r] * 50.0, reduced_mass[r] * 50.0)
             rf = np.where(same_r, rf_same, rf_diff)
             imp_s = rf[:, np.newaxis] * normal[r] * dt

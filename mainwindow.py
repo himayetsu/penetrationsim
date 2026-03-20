@@ -465,10 +465,9 @@ class MainWindow(QMainWindow):
 
         if body.lines is not None and visible and self.show_springs:
             if body.springs is not None and len(body.springs) > 0:
-                lp = np.zeros((len(body.springs) * 2, 3), dtype=np.float32)
-                for k, (i, j) in enumerate(body.springs):
-                    lp[k * 2] = body.pos[i]
-                    lp[k * 2 + 1] = body.pos[j]
+                lp = np.empty((len(body.springs) * 2, 3), dtype=np.float32)
+                lp[0::2] = body.pos[body.springs[:, 0]]
+                lp[1::2] = body.pos[body.springs[:, 1]]
                 body.lines.setData(pos=lp)
 
     def rebuild_visuals(self, body):
